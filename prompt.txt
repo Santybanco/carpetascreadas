@@ -1,0 +1,179 @@
+CONTEXTO DEL PROYECTO
+
+Estoy desarrollando una automatización en Python durante mis prácticas de desarrollo de software.
+El objetivo es automatizar la construcción mensual de un archivo llamado **"Indicadores de operación nuevo"**, el cual actualmente se construye manualmente en Excel usando sábanas y tablas dinámicas.
+
+El proceso pertenece a indicadores de **salud contable** y se ejecuta **mensualmente al cierre del mes**.
+
+El flujo actual es manual y consiste en:
+
+1. Tomar varios archivos Excel que se encuentran en una ruta fija.
+2. Limpiar y procesar la información.
+3. Separar débitos y créditos.
+4. Identificar partidas "fuera de política".
+5. Construir tablas dinámicas por gerencia.
+6. Validar conteos e integridad de los datos.
+7. Generar indicadores.
+8. Consolidar el resultado en un archivo final llamado **Indicadores de operación nuevo**.
+9. Guardar ese archivo en un SharePoint compartido.
+
+La automatización debe replicar este flujo utilizando Python.
+
+---
+
+ESTRUCTURA DEL PROYECTO
+
+El proyecto ya tiene definida la siguiente arquitectura modular:
+
+ISCE
+
+main.py
+
+cargadores/
+**init**.py
+cargador_excel.py
+
+config/
+**init**.py
+configuracion.py
+
+datos/
+**init**.py
+rutas.py
+
+exportadores/
+**init**.py
+exportador_excel.py
+
+indicadores/
+**init**.py
+generador_indicadores.py
+
+procesadores/
+**init**.py
+procesador_temporales.py
+
+utils/
+**init**.py
+
+venv/
+
+Esta estructura **NO debe cambiarse**, la IA debe trabajar respetando esta arquitectura.
+
+El proyecto utiliza **Python 3.9**.
+
+Se busca mantener un **código simple, legible y de bajo código**, pero organizado mediante **Programación Orientada a Objetos (POO)**.
+
+---
+
+ARCHIVOS DE ENTRADA (INPUTS)
+
+Cada mes existen varios archivos Excel ubicados en una ruta fija del banco.
+
+Ejemplo de archivos:
+
+Indicadores_ALCON_ENERO_2025.xlsx
+Informe Cuentas Temporales Ene.xlsx
+Informe CxC Ene.xlsx
+Informe CxP Ene.xlsx
+
+Estos archivos contienen la información necesaria para calcular los indicadores.
+
+Los archivos de **entrada permanecen siempre en la misma ruta**, solo cambia el mes.
+
+El programa debe:
+
+1. Buscar automáticamente los archivos en la ruta.
+2. Cargar los Excel usando pandas.
+3. Procesar la información.
+
+---
+
+PROCESO DE TRANSFORMACIÓN
+
+Los datos deben ser procesados para:
+
+• limpiar información
+• manejar valores nulos
+• separar débitos y créditos según el signo del valor
+• identificar partidas fuera de política
+• agrupar información por gerencia
+• validar conteos de registros
+
+Hay un caso crítico que debe respetarse:
+
+Si una cuenta tiene **saldo neto 0 pero tiene partidas**, esas partidas **no deben perderse ni eliminarse del análisis**.
+
+---
+
+INDICADORES A GENERAR
+
+El proceso construye indicadores asociados a siete frentes:
+
+1. Temporales
+2. Por cobrar (CxC)
+3. Por pagar (CxP)
+4. Atención de alertas
+5. Custodia de comprobantes
+6. Rodamiento de partidas
+7. Certificación de gerentes
+
+Estos indicadores se consolidan en dos resultados principales:
+
+1. Indicadores de operación
+2. Incumplimiento de lineamientos de operación
+
+Actualmente el foco de desarrollo es automatizar el cálculo base y generar el archivo principal **Indicadores de operación nuevo**.
+
+---
+
+RESULTADO FINAL
+
+El script debe generar un archivo Excel final llamado:
+
+Indicadores_operacion_nuevo.xlsx
+
+Este archivo debe contener los resultados de los indicadores procesados y estar listo para ser utilizado por los analistas.
+
+El archivo final se debe guardar en una ruta de salida que luego será subida a SharePoint.
+
+---
+
+FLUJO GENERAL DEL PROGRAMA
+
+El flujo esperado del programa es:
+
+1. main.py inicia el proceso.
+2. cargador_excel carga los archivos de entrada.
+3. procesadores transforman los datos (temporales, CxC, CxP).
+4. generador_indicadores calcula los indicadores.
+5. exportador_excel genera el archivo final Excel.
+
+---
+
+OBJETIVO DE LA IA
+
+La IA debe ayudar a:
+
+• implementar las clases de cada módulo
+• escribir funciones claras y simples
+• usar pandas para manipulación de datos
+• mantener el código modular
+• respetar la estructura del proyecto existente
+
+No se busca sobreingeniería ni frameworks complejos.
+
+El objetivo es construir una **automatización clara, mantenible y funcional**.
+
+---
+
+SOLICITUD
+
+Ayúdame a desarrollar paso a paso los módulos del proyecto comenzando por:
+
+1. cargador_excel.py
+2. procesador_temporales.py
+3. generador_indicadores.py
+4. exportador_excel.py
+
+El código debe ser compatible con **Python 3.9** y usar **pandas** para la manipulación de Excel.
