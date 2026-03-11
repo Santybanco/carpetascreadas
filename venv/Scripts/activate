@@ -37,7 +37,7 @@ deactivate () {
 # unset irrelevant variables
 deactivate nondestructive
 
-VIRTUAL_ENV="E:\Santy\PRACTICAS BANCOLOMBIA\ISCE\venv"
+VIRTUAL_ENV="C:\Users\santcord\ISCE EUC\carpetascreadas\venv"
 export VIRTUAL_ENV
 
 _OLD_VIRTUAL_PATH="$PATH"
