@@ -42,12 +42,14 @@ class CargadorExcel:
                     return tipo
         return ""
 
+    
+    
     def _normalizar_columnas(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Minúsculas y reemplazo de espacios por guion bajo.
-        """
-        df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+        # convertir SIEMPRE a str antes de strip/lower
+        df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
         return df
+
+
 
     # -------------------- API pública --------------------
 

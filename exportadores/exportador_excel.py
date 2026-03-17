@@ -14,6 +14,7 @@ class ExportadorExcel:
     - Atención de alertas con calidad (ALCON)
     - Histórico de Certificación de Gerentes
     - TD Saldo (Temporales) a A4 con % calculado
+    - TD SABANA (Temporales) a E4 con % calculado
     """
 
     def __init__(self, ruta_salida: Path):
@@ -261,6 +262,99 @@ class ExportadorExcel:
         wb.save(destino)
         return destino
 
+    # ==============================================================
+    #   4) TD SABANA → E4 con % calculado (IFERROR)
+    # ==============================================================
+    def exportar_td_sabana_en_indicadores(
+        self,
+        df_td_sabana: pd.DataFrame,
+        nombre_hoja_mes: str,
+        nombre_archivo: str = "Indicadores_operacion_nuevo.xlsx",
+        celda_inicio: str = "E4",
+        formato_porcentaje: str = "0.0%"  # usa "0.00%" si prefieres 2 decimales
+    ) -> Path:
+        """
+        Pega la TD SABANA en la hoja del mes a partir de E4:
+          E: TOTAL PARTIDAS
+          F: PARTIDAS FUERA DE POLITICA (columna 'SI')
+          G: % = IFERROR(F/E,0)
+        - Respeta el archivo final existente; no toca el resto de la hoja.
+        """
+        destino = self.ruta_salida / nombre_archivo
+        if not destino.exists():
+            raise FileNotFoundError(
+                f"No existe el archivo final '{destino}'. Genéralo primero (ALCON/HISTÓRICO/TD Saldo) y vuelve a intentar."
+            )
+
+        wb = load_workbook(destino)
+        ws = wb[nombre_hoja_mes] if nombre_hoja_mes in wb.sheetnames else wb.create_sheet(title=nombre_hoja_mes)
+
+        # Parsear 'E4' -> (col_ini, fila_ini)
+        m = re.match(r"^([A-Za-z]+)(\d+)$", celda_inicio)
+        if not m:
+            raise ValueError(f"Celda inicio inválida: {celda_inicio}")
+        col_letters, row_str = m.groups()
+
+        def col_letter_to_index(col: str) -> int:
+            col = col.upper()
+            n = 0
+            for ch in col:
+                n = n * 26 + (ord(ch) - 64)
+            return n
+
+        start_col = col_letter_to_index(col_letters)  # E
+        start_row = int(row_str)                      # 4
+
+        # Preparar datos (Total Partidas, Partidas fuera de política)
+        cols = {str(c).strip(): c for c in df_td_sabana.columns}
+        col_total = cols.get("Total general")
+        col_si    = cols.get("SI")
+        col_no    = cols.get("NO")
+
+        if col_total is None and (col_si is None and col_no is None):
+            raise ValueError("TD SABANA no tiene columnas suficientes: se espera 'Total general' o 'SI'/'NO'.")
+
+        if col_total is not None:
+            total_partidas = pd.to_numeric(df_td_sabana[col_total], errors="coerce").fillna(0).astype(int)
+        else:
+            si_vals = pd.to_numeric(df_td_sabana[col_si], errors="coerce").fillna(0)
+            no_vals = pd.to_numeric(df_td_sabana[col_no], errors="coerce").fillna(0) if col_no is not None else 0
+            total_partidas = (si_vals + no_vals).astype(int)
+
+        fuera_politica = pd.to_numeric(df_td_sabana[col_si], errors="coerce").fillna(0).astype(int) if col_si is not None else pd.Series([0]*len(df_td_sabana))
+
+        # Limpiar bloque previo (E4:G500 por defecto)
+        max_filas_borrar = max(500, len(df_td_sabana) + 20)
+        for r in range(start_row, start_row + max_filas_borrar):
+            for c in range(start_col, start_col + 3):  # E, F, G
+                ws.cell(row=r, column=c, value=None)
+
+        # Encabezados en E4:F4:G4
+        headers = ["TOTAL PARTIDAS", "PARTIDAS FUERA DE POLITICA", "%"]
+        for j, h in enumerate(headers, start=start_col):
+            cell = ws.cell(row=start_row, column=j, value=h)
+            cell.font = Font(bold=True)
+
+        # Escribir datos desde E5 y fórmula en G
+        first_data_row = start_row + 1
+        for i in range(len(df_td_sabana)):
+            fila_excel = first_data_row + i
+
+            # E y F como enteros
+            e_cell = ws.cell(row=fila_excel, column=start_col + 0, value=int(total_partidas.iloc[i]))
+            f_cell = ws.cell(row=fila_excel, column=start_col + 1, value=int(fuera_politica.iloc[i]))
+            e_cell.number_format = "#,##0"
+            f_cell.number_format = "#,##0"
+
+            # G = IFERROR(F/E,0) -> OOXML inglés
+            colE = _col_letter(start_col + 0)
+            colF = _col_letter(start_col + 1)
+            g_cell = ws.cell(row=fila_excel, column=start_col + 2, value=f"=IFERROR({colF}{fila_excel}/{colE}{fila_excel},0)")
+            g_cell.number_format = formato_porcentaje
+
+        wb.save(destino)
+        return destino
+
     # Helper: número de columna -> letra (A, B, ..., Z, AA, AB, ...)
     def _col_letra(self, col_num: int) -> str:
         letters = ""
@@ -268,3 +362,12 @@ class ExportadorExcel:
             col_num, rem = divmod(col_num - 1, 26)
             letters = chr(65 + rem) + letters
         return letters
+
+
+# Helper alterno (fuera de la clase) si lo necesitas en otros módulos
+def _col_letter(col_num: int) -> str:
+    letters = ""
+    while col_num > 0:
+        col_num, rem = divmod(col_num - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters

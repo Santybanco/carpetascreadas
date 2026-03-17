@@ -1,40 +1,73 @@
 # Ejecuta esto desde la raíz del proyecto (ISCE)
 
 import sys
+import time
 from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parents[0]))
-from cargadores.cargador_excel import CargadorExcel
-from pathlib import Path
-from procesadores.procesador_temporales import ProcesadorTemporales
 
-from pathlib import Path
+# Asegurar que Python conozca la raíz del proyecto
+sys.path.append(str(Path(__file__).resolve().parents[0]))
+
+# Imports del proyecto
 import pandas as pd
+from cargadores.cargador_excel import CargadorExcel
+from indicadores.generador_indicadores import GeneradorIndicadores
 from exportadores.exportador_excel import ExportadorExcel
+from procesadores.procesador_temporales import ProcesadorTemporales
 from datos.rutas import obtener_ruta_salida
 
+
+# ---------------------------------------------
+# 0) Parámetros de ejecución
+# ---------------------------------------------
+NOMBRE_HOJA_MES = "enero 2026"  # Ajusta el mes aquí una sola vez
+
+# Si quieres guardar TEMPORALES directo en OneDrive/SharePoint, pon la ruta local sincronizada:
+# Si no existe, el procesador guardará en datos/salida automáticamente.
+RUTA_SP_STR = r"C:\Users\santcord\OneDrive - Grupo Bancolombia\Administrativo_M365 - PRUEBAS ENERO"
+RUTA_SP = Path(RUTA_SP_STR) if Path(RUTA_SP_STR).exists() else None
+
+
+# ---------------------------------------------
+# Utilidades simples de medición
+# ---------------------------------------------
+def tic():
+    return time.perf_counter()
+
+def lap(t0: float, label: str):
+    t = time.perf_counter() - t0
+    print(f"⏱️ {label}: {t:0.2f} s")
+    return time.perf_counter()  # devuelve nuevo punto de partida
+
+
+# ---------------------------------------------
+# INICIO
+# ---------------------------------------------
+t_total = tic()
+
+# ---------------------------------------------
+# 1) Cargar archivos (resumen)
+# ---------------------------------------------
+t = tic()
 cargador = CargadorExcel()
 data, meta = cargador.cargar_todo()
 
 print("\n📊 Resumen")
 print(cargador.resumen(data))
 
-# Si quieres ojear las primeras filas de cada tipo:
+# (Opcional) Ver primeras filas por tipo
 for tipo, dfs in data.items():
     if not dfs:
         continue
     print(f"\n🔎 Primeras filas de '{tipo}':")
     print(dfs[0].head())
 
-# --- PRUEBA ALCON: extraer y exportar ---
+t = lap(t, "Carga y resumen de archivos")
 
-from indicadores.generador_indicadores import GeneradorIndicadores
-from exportadores.exportador_excel import ExportadorExcel
-from datos.rutas import obtener_ruta_salida
 
-from procesadores.procesador_temporales import ProcesadorTemporales
-from config.configuracion import Configuracion
-
-# 1) Tomamos el primer archivo ALCON detectado por el cargador
+# ---------------------------------------------
+# 2) ALCON → Indicadores (A83)
+# ---------------------------------------------
+t_alcon = tic()
 archivos_alcon = meta.get("alcon", [])
 if not archivos_alcon:
     print("⚠️ No hay archivo ALCON en la carpeta de entrada.")
@@ -51,61 +84,55 @@ else:
     print(df_alertas.tail())
     print(f"\n📏 Filas totales (incluye 'Total general'): {len(df_alertas)}")
 
-    # 2) Exportamos al archivo final, hoja del mes (ajusta el nombre según tu mes)
-    nombre_hoja_mes = "enero 2026"  # <- cámbialo por el mes que estés construyendo
-    exportador = ExportadorExcel(obtener_ruta_salida())
-    destino = exportador.exportar_atencion_alertas_calidad(
-        df_alertas, nombre_hoja_mes=nombre_hoja_mes,
+    exportador_ind = ExportadorExcel(obtener_ruta_salida())
+    destino_ind = exportador_ind.exportar_atencion_alertas_calidad(
+        df_alertas,
+        nombre_hoja_mes=NOMBRE_HOJA_MES,
         nombre_archivo="Indicadores_operacion_nuevo.xlsx",
-        fila_inicio_excel=81
     )
+    print(f"\n📤 Exportado ALCON en: {destino_ind}")
+    print(f"   Hoja: {NOMBRE_HOJA_MES} | Encabezados desde A83")
+lap(t_alcon, "ALCON → Indicadores (A83)")
 
-    print(f"\n📤 Exportado a: {destino}")
-    print(f"   Hoja: {nombre_hoja_mes} | Fila inicio: 83 | Columnas: A:E")
 
-
-    # --- PRUEBA HISTÓRICO: extraer y exportar ---
-from indicadores.generador_indicadores import GeneradorIndicadores
-from exportadores.exportador_excel import ExportadorExcel
-from datos.rutas import obtener_ruta_salida
-
-gen = GeneradorIndicadores()
-exportador = ExportadorExcel(obtener_ruta_salida())
-
-# 1) Buscar el archivo histórico
+# ---------------------------------------------
+# 3) HISTÓRICO → Indicadores (A180)
+# ---------------------------------------------
+t_hist = tic()
+exportador_ind = ExportadorExcel(obtener_ruta_salida())
 archivos_historico = meta.get("historico", [])
+
 if not archivos_historico:
     print("⚠️ No hay archivo 'Historico Indicador Certificación Gerentes.xlsx' en la carpeta de entrada.")
 else:
     archivo_hist = archivos_historico[0]
     print(f"\n🧩 Usando HISTÓRICO: {archivo_hist.name}")
 
-    # 2) Extraer las 4 columnas tal cual
-    df_hist = gen.extraer_historico_certificacion(archivo_hist)
+    gen = GeneradorIndicadores()
+    try:
+        df_hist = gen.extraer_historico_certificacion(archivo_hist)
+        print("\n✅ Histórico (primeras filas):")
+        print(df_hist.head())
 
-    print("\n✅ Histórico (primeras filas):")
-    print(df_hist.head())
+        destino_ind2 = exportador_ind.exportar_historico_certificacion(
+            df_hist,
+            nombre_hoja_mes=NOMBRE_HOJA_MES,
+            nombre_archivo="Indicadores_operacion_nuevo.xlsx",
+            fila_inicio_excel=180,  # Encabezados en A180
+            col_inicio_excel=1,     # Columna A
+            escribir_promedio=True  # Promedio dinámico de INDICADOR (formato %)
+        )
+        print(f"\n📤 Histórico exportado a: {destino_ind2}")
+        print("   Hoja:", NOMBRE_HOJA_MES, "| Celda inicio: A180")
+    except Exception as e:
+        print(f"❌ Error procesando Histórico: {e}")
+lap(t_hist, "HISTÓRICO → Indicadores (A180)")
 
-    # 3) Exportar a la misma hoja del mes en A180
-    nombre_hoja_mes = "enero 2026"  # 👈 Ajusta según el mes
-    destino2 = exportador.exportar_historico_certificacion(
-        df_hist,
-        nombre_hoja_mes=nombre_hoja_mes,
-        nombre_archivo="Indicadores_operacion_nuevo.xlsx",
-        fila_inicio_excel=180,  # Encabezados en A180
-        col_inicio_excel=1      # Columna A
-    )
 
-    print(f"\n📤 Histórico exportado a: {destino2}")
-    print("   Hoja:", nombre_hoja_mes, "| Celda inicio: A180")
-
-    
-
-# 1) Ruta SharePoint (si ya la tienes exacta):
-#    Reemplaza esta línea cuando me confirmes tu ruta real:
-ruta_sharepoint = None  # Path(r"C:\Users\...\OneDrive - ...\Administrativo_M365\Documentos\PRUEBAS ENERO\Todos los documentos")
-
-# 2) Tomar el archivo de temporales detectado por el cargador
+# ---------------------------------------------
+# 4) TEMPORALES → procesar (TEMPORAL, TEMPORAL2, TD Saldo, Sábana, TD SABANA)
+# ---------------------------------------------
+t_temp = tic()
 archivos_temporales = meta.get("temporales", [])
 if not archivos_temporales:
     print("⚠️ No se encontró el archivo de temporales en datos/entrada.")
@@ -113,80 +140,55 @@ else:
     archivo_temp = archivos_temporales[0]
     print(f"\n🧩 Procesando TEMPORALES desde: {archivo_temp.name}")
 
-    proc = ProcesadorTemporales(ruta_sharepoint=ruta_sharepoint)
-    destino = proc.procesar_y_exportar(archivo_temp)
-
-    print(f"📤 Libro generado: {destino}")
-    print("   Hojas: TEMPORAL, TEMPORAL2 (filtrada), TD Saldo, Sábana Temporales")
-
-    from pathlib import Path
-
-def resolver_ruta_sharepoint_local() -> Path:
-    """
-    Busca la carpeta local sincronizada que corresponde a:
-      Administrativo125 - Documentos compartidos\General\Indicadores\Indicadores Operación\2026\PRUEBAS ENERO
-    Retorna la primera que exista. Si no encuentra, retorna Path() vacío.
-    """
-    # Posibles raíces de OneDrive/SharePoint en Windows
-    bases = [
-        Path.home() / "OneDrive - Bancolombia S.A",
-        Path.home() / "OneDrive - Bancolombia",
-        Path.home() / "Bancolombia",
-        Path.home() / "OneDrive - Grupo Bancolombia",
-    ]
-
-    # Dos patrones frecuentes de cómo se “monta” la biblioteca en el Explorador
-    relativos = [
-        Path(r"Administrativo125 - Documentos compartidos\General\Indicadores\Indicadores Operación\2026\PRUEBAS ENERO"),
-        Path(r"Administrativo125\Documentos compartidos\General\Indicadores\Indicadores Operación\2026\PRUEBAS ENERO"),
-    ]
-
-    for base in bases:
-        for rel in relativos:
-            candidato = base / rel
-            if candidato.exists():
-                return candidato
-    return Path()
-
-
-
-# 👇 Pega aquí la ruta EXACTA que copiaste del Explorador:
-RUTA_SP = Path(r"C:\Users\santcord\OneDrive - Grupo Bancolombia\Administrativo_M365 - PRUEBAS ENERO")
-
-archivos_temporales = meta.get("temporales", [])
-if not archivos_temporales:
-    print("⚠️ No se encontró el archivo de temporales en datos/entrada.")
-else:
-    archivo_temp = archivos_temporales[0]
-    print(f"\n🧩 Procesando TEMPORALES desde: {archivo_temp.name}")
-
-    # Instancia el procesador apuntando a la carpeta de OneDrive/SharePoint
-    proc = ProcesadorTemporales(ruta_sharepoint=RUTA_SP)
-
-    destino = proc.procesar_y_exportar(
+    proc = ProcesadorTemporales(ruta_sharepoint=RUTA_SP)  # si RUTA_SP es None, guarda en datos/salida
+    destino_proc = proc.procesar_y_exportar(
         archivo_temporales=archivo_temp,
-        nombre_archivo_salida="Informe Cuentas Temporales Ene_procesado.xlsx"
+        crear_db_cr_sabana=True   # pon False si quieres “omitir/comentar” DB/CR
     )
-
-    print(f"📤 Libro generado: {destino}")
-
-    # --- DESPUÉS de procesar temporales y generar el archivo procesado en SharePoint ---
+    print(f"📤 Libro generado (TEMPORALES): {destino_proc}")
+lap(t_temp, "TEMPORALES: procesar y exportar")
 
 
-# 1) Ruta donde quedó el "Informe Cuentas Temporales Ene_procesado.xlsx" (tu SharePoint)
-RUTA_SP = Path(r"C:\Users\santcord\OneDrive - Grupo Bancolombia\Administrativo_M365 - PRUEBAS ENERO")
+# ---------------------------------------------
+# 5) TD Saldo → Indicadores (A4 en la hoja del mes)
+# ---------------------------------------------
+t_td = tic()
+try:
+    # Leemos TD Saldo desde el archivo procesado (SharePoint o local según RUTA_SP)
+    df_td = pd.read_excel(destino_proc, sheet_name="TD Saldo", engine="openpyxl")
 
-# 2) Leemos la hoja TD Saldo del archivo procesado
-archivo_procesado = RUTA_SP / "Informe Cuentas Temporales Ene_procesado.xlsx"
-df_td = pd.read_excel(archivo_procesado, sheet_name="TD Saldo", engine="openpyxl")
+    exportador_ind = ExportadorExcel(obtener_ruta_salida())
+    destino_final = exportador_ind.exportar_td_saldo_en_indicadores(
+        df_td=df_td,
+        nombre_hoja_mes=NOMBRE_HOJA_MES,        # hoja del mes
+        nombre_archivo="Indicadores_operacion_nuevo.xlsx",
+        celda_inicio="A4"                       # encabezados en A4
+    )
+    print(f"\n📎 TD Saldo pegado en: {destino_final} -> hoja '{NOMBRE_HOJA_MES}' desde A4")
+except Exception as e:
+    print(f"❌ Error pegando TD Saldo en Indicadores: {e}")
+lap(t_td, "Pegar TD Saldo en Indicadores (A4)")
 
-# 3) Pegamos en el libro final "Indicadores_operacion_nuevo.xlsx", hoja "enero 2026", empezando en A4
-exportador = ExportadorExcel(obtener_ruta_salida())
-destino_final = exportador.exportar_td_saldo_en_indicadores(
-    df_td=df_td,
-    nombre_hoja_mes="enero 2026",     # ajusta si cambias de mes
-    nombre_archivo="Indicadores_operacion_nuevo.xlsx",
-    celda_inicio="A4"
-)
+# ---------------------------------------------
+# 6) TD SABANA → Indicadores (E4 en la hoja del mes)
+# ---------------------------------------------
+try:
+    df_td_sab = pd.read_excel(destino_proc, sheet_name="TD SABANA", engine="openpyxl")
 
-print(f"📎 TD Saldo pegado en: {destino_final} -> hoja 'enero 2026' desde A4")
+    exportador_ind = ExportadorExcel(obtener_ruta_salida())
+    destino_final_2 = exportador_ind.exportar_td_sabana_en_indicadores(
+        df_td_sabana=df_td_sab,
+        nombre_hoja_mes=NOMBRE_HOJA_MES,         # hoja del mes
+        nombre_archivo="Indicadores_operacion_nuevo.xlsx",
+        celda_inicio="E4"                        # encabezados en E4
+    )
+    print(f"\n📎 TD SABANA pegado en: {destino_final_2} -> hoja '{NOMBRE_HOJA_MES}' desde E4")
+except Exception as e:
+    print(f"❌ Error pegando TD SABANA en Indicadores: {e}")
+
+
+# ---------------------------------------------
+# FIN
+# ---------------------------------------------
+lap(t_total, "⏱️ Tiempo TOTAL del script")
+print("✅ Finalizado.")
