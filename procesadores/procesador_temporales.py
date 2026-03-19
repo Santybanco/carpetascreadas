@@ -20,7 +20,9 @@ class ProcesadorTemporales:
       - Duplica 'TEMPORAL' -> 'TEMPORAL2' y filtra SALDO CONTABLE != 0
       - Genera 'TD Saldo' (conteos por gerencia)
       - Manipula 'Sábana Temporales' (DB/CR opcional) y construye 'TD SABANA'
-      - Exporta a SharePoint (si existe ruta) o a datos/salida/ (guardado atómico)
+      - Añade fórmulas de control (SUM/SUBTOTAL) en Sábana
+      - Inserta TD SABANA DB (suma de VALOR PARTIDA PESOS DB) desde A32 en la hoja TD SABANA
+      - Exporta a SharePoint (si existe ruta) y deja copia local en datos/salida/
     """
 
     def __init__(self, ruta_sharepoint: Optional[Path] = None):
@@ -54,12 +56,12 @@ class ProcesadorTemporales:
         s = serie.astype(str)
         s = s.str.replace(r"[\r\n\t]", "", regex=True)
         s = s.str.replace(r"[^\d\-.,]", "", regex=True).str.strip()
-        # Si hay coma y punto -> quitar puntos (miles) y dejar coma como decimal
         mask_coma = s.str.contains(",", regex=False)
         mask_punto = s.str.contains(r"\.", regex=True)
+        # "1.234,56" -> "1234.56"
         s = s.where(~(mask_coma & mask_punto),
                     s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False))
-        # Si solo hay coma -> usarla como decimal
+        # "1234,56" -> "1234.56"
         s = s.where(~(mask_coma & ~mask_punto),
                     s.str.replace(",", ".", regex=False))
         return pd.to_numeric(s, errors="coerce")
@@ -236,6 +238,70 @@ class ProcesadorTemporales:
 
         return td.reset_index().rename(columns={col_g: "Etiquetas de fila"})
 
+    def _construir_td_sabana_db(self, df_sabana: pd.DataFrame) -> pd.DataFrame:
+        """
+        TD SABANA (DB):
+          - Filas: gerencia_responsable
+          - Columnas: FUERA DE POLITICA (usaremos SI si existe)
+          - Valores: SUMA de 'VALOR PARTIDA PESOS DB'
+          - Incluye columna 'Total general' y fila 'Total general'
+        Si no existe 'VALOR PARTIDA PESOS DB', lo construye a partir de 'VALOR PARTIDA PESOS' (>0).
+        """
+        cols = list(df_sabana.columns)
+        col_ger  = self._encontrar_columna(cols, "gerencia_responsable")
+        col_pol  = self._encontrar_columna(cols, "FUERA DE POLITICA")
+        col_db   = self._encontrar_columna(cols, "VALOR PARTIDA PESOS DB")
+        col_val  = self._encontrar_columna(cols, "VALOR PARTIDA PESOS")
+
+        faltan = [n for n, v in {
+            "gerencia_responsable": col_ger,
+            "FUERA DE POLITICA": col_pol,
+        }.items() if v is None]
+        if faltan:
+            raise ValueError(f"No encontré columnas requeridas para TD SABANA DB: {', '.join(faltan)}")
+
+        # Si no hay columna DB, la creamos desde VALOR PARTIDA PESOS (>0)
+        dfp = df_sabana.copy()
+        if col_db is None:
+            if col_val is None:
+                raise ValueError("No encontré 'VALOR PARTIDA PESOS DB' ni 'VALOR PARTIDA PESOS' para construir la TD DB.")
+            serie = self._to_numeric_safe(dfp[col_val]).fillna(0.0)
+            dfp["__DB__"] = serie.where(serie > 0, 0.0)
+            col_db = "__DB__"
+
+        # Normalización leve
+        dfp[col_ger] = (dfp[col_ger].astype(str)
+                        .str.replace(r"[\r\n\t]", "", regex=True).str.strip())
+        dfp[col_pol] = (dfp[col_pol].astype(str)
+                        .str.replace(r"[\r\n\t]", "", regex=True).str.strip().str.upper()
+                        .replace({"SÍ": "SI"}))
+
+        # Pivot SUM (DB)
+        td = pd.pivot_table(
+            dfp,
+            index=col_ger,
+            columns=col_pol,
+            values=col_db,
+            aggfunc="sum",
+            fill_value=0.0,
+            dropna=False
+        )
+
+        # Orden esperado: SI, NO (si existen)
+        cols_ord = [c for c in ["SI", "NO"] if c in td.columns]
+        td = td[cols_ord] if cols_ord else td
+
+        # Total por fila
+        td["Total general"] = td.sum(axis=1)
+
+        # Fila Total general
+        totales = {c: float(td[c].sum()) for c in td.columns}
+        td.loc["Total general"] = totales
+
+        # Devolver con cabecera estilo Excel
+        td = td.reset_index().rename(columns={col_ger: "Etiquetas de fila"})
+        return td
+
     def _agregar_filas_control_excel_sabana(self, xlsx_path: Path, hoja: str = "Sábana Temporales") -> None:
         """
         Abre el archivo guardado y añade dos filas de control al final de la hoja 'Sábana Temporales':
@@ -289,6 +355,83 @@ class ProcesadorTemporales:
 
         wb.save(xlsx_path)
 
+    def _escribir_bloque_td_sabana_db(self, xlsx_path: Path, df_db: pd.DataFrame, celda_inicio: str = "A32") -> None:
+        """
+        Escribe el bloque de TD SABANA (DB) dentro de la hoja 'TD SABANA' empezando en 'celda_inicio'.
+        Encabezados: 'Etiquetas de fila' | 'SI' (si existe) | 'Total general'
+        Formato numérico: #,##0.00
+        """
+        xlsx_path = Path(xlsx_path)
+        wb = load_workbook(xlsx_path)
+        hoja = "TD SABANA"
+        if hoja not in wb.sheetnames:
+            wb.save(xlsx_path)
+            return
+        ws = wb[hoja]
+
+        # Parsear celda (p.ej. A32)
+        m = re.match(r"^([A-Za-z]+)(\d+)$", celda_inicio)
+        if not m:
+            wb.save(xlsx_path)
+            raise ValueError(f"Celda inicio inválida: {celda_inicio}")
+        col_letters, row_str = m.groups()
+
+        def col_letter_to_index(col: str) -> int:
+            col = col.upper()
+            n = 0
+            for ch in col:
+                n = n * 26 + (ord(ch) - 64)
+            return n
+
+        start_col = col_letter_to_index(col_letters)
+        start_row = int(row_str)
+
+        # Determinar columnas a escribir: Etiquetas de fila, SI (si existe), Total general
+        cols_map = {str(c).strip(): c for c in df_db.columns}
+        has_si = "SI" in cols_map
+        headers = ["Etiquetas de fila"]
+        if has_si:
+            headers.append("SI")
+        headers.append("Total general")
+
+        # Limpiar bloque (A32:D... aprox.)
+        max_rows = max(500, len(df_db) + 20)
+        max_cols = start_col + 3
+        for r in range(start_row, start_row + max_rows):
+            for c in range(start_col, max_cols):
+                ws.cell(row=r, column=c, value=None)
+
+        # Encabezados
+        for j, h in enumerate(headers, start=start_col):
+            ws.cell(row=start_row, column=j, value=h)
+
+        # Datos
+        first_data_row = start_row + 1
+        for i in range(len(df_db)):
+            fila_excel = first_data_row + i
+
+            # A: Etiquetas de fila
+            ws.cell(row=fila_excel, column=start_col, value=str(df_db.iloc[i]["Etiquetas de fila"]))
+
+            col_w = start_col + 1
+            if has_si:
+                try:
+                    val_si = float(pd.to_numeric(df_db.iloc[i]["SI"], errors="coerce") or 0.0)
+                except Exception:
+                    val_si = 0.0
+                cSI = ws.cell(row=fila_excel, column=col_w, value=val_si)
+                cSI.number_format = "#,##0.00"
+                col_w += 1
+
+            try:
+                val_tot = float(pd.to_numeric(df_db.iloc[i]["Total general"], errors="coerce") or 0.0)
+            except Exception:
+                val_tot = 0.0
+            cTOT = ws.cell(row=fila_excel, column=col_w, value=val_tot)
+            cTOT.number_format = "#,##0.00"
+
+        wb.save(xlsx_path)
+
     # -------------------- ORQUESTADOR --------------------
 
     def procesar_y_exportar(self, archivo_temporales: Path, crear_db_cr_sabana: bool = True) -> Path:
@@ -315,7 +458,10 @@ class ProcesadorTemporales:
             print("4) (Omitido) DB/CR en Sábana por configuración.")
             df_sabana_proc = df_sabana
 
-        print("5) Construyendo TD SABANA…")
+        print("5) Construyendo TD SABANA DB (SUMA de VALOR PARTIDA PESOS DB)…")
+        td_sabana_db = self._construir_td_sabana_db(df_sabana_proc)
+
+        print("6) Construyendo TD SABANA (conteo)…")
         td_sabana = self._construir_td_sabana(df_sabana)
 
         # Resolver destino (SharePoint si existe; si no, salida local)
@@ -332,13 +478,17 @@ class ProcesadorTemporales:
             "TD Saldo": td_saldo,
             "Sábana Temporales": df_sabana_proc,
             "TD SABANA": td_sabana
+            # ,"TD SABANA DB": td_sabana_db  # Descomenta si quieres una hoja adicional con esta TD
         })
 
         # Añadir fórmulas de control al final de 'Sábana Temporales'
         self._agregar_filas_control_excel_sabana(destino, hoja="Sábana Temporales")
 
-        # Copia de seguridad local (además de SharePoint) **ya con fórmulas**
-        self._duplicar_a_salida_local(destino)
+        # Escribir el bloque de TD SABANA (DB) dentro de la hoja 'TD SABANA' en A32
+        self._escribir_bloque_td_sabana_db(destino, td_sabana_db, celda_inicio="A32")
+
+        # Copia de seguridad local (además de SharePoint) **ya con fórmulas y bloque DB**
+        #self._duplicar_a_salida_local(destino)
 
         # Verificación rápida
         try:

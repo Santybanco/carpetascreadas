@@ -40,6 +40,39 @@ def lap(t0: float, label: str):
 
 
 # ---------------------------------------------
+# Helper robusto: leer TD SABANA (DB) desde la hoja homónima
+#   - Intenta header=31 (fila 32) como nos definimos
+#   - Si falla, busca dinámicamente la fila donde está 'Etiquetas de fila' + 'Total general'
+# ---------------------------------------------
+def leer_td_sabana_db(destino_proc: Path) -> pd.DataFrame:
+    hoja = "TD SABANA"
+    # 1) Primer intento: header=31 (fila 32)
+    try:
+        df = pd.read_excel(destino_proc, sheet_name=hoja, engine="openpyxl", header=31)
+        cols = [c for c in df.columns]
+        if any(str(c).strip() in ("Etiquetas de fila", "Total general", "SI", "SÍ") for c in cols):
+            return df
+    except Exception:
+        pass
+
+    # 2) Fallback: detectar la fila de encabezados dinámicamente
+    raw = pd.read_excel(destino_proc, sheet_name=hoja, engine="openpyxl", header=None)
+    header_row = None
+    for i in range(min(len(raw), 200)):  # escaneo de primeras 200 filas
+        fila = [str(x).strip() for x in list(raw.iloc[i].values)]
+        if ("Etiquetas de fila" in fila) and ("Total general" in fila):
+            if ("SI" in fila) or ("SÍ" in fila) or any((isinstance(s, str) and s.upper() == "SI") for s in fila):
+                header_row = i
+                break
+    if header_row is None:
+        # Último intento: usa header=31 y dejamos que el exportador valide columnas
+        return pd.read_excel(destino_proc, sheet_name=hoja, engine="openpyxl", header=31)
+
+    df = pd.read_excel(destino_proc, sheet_name=hoja, engine="openpyxl", header=header_row)
+    return df
+
+
+# ---------------------------------------------
 # INICIO
 # ---------------------------------------------
 t_total = tic()
@@ -69,6 +102,8 @@ t = lap(t, "Carga y resumen de archivos")
 # ---------------------------------------------
 t_alcon = tic()
 archivos_alcon = meta.get("alcon", [])
+exportador_ind = ExportadorExcel(obtener_ruta_salida())  # instancia única
+
 if not archivos_alcon:
     print("⚠️ No hay archivo ALCON en la carpeta de entrada.")
 else:
@@ -84,7 +119,6 @@ else:
     print(df_alertas.tail())
     print(f"\n📏 Filas totales (incluye 'Total general'): {len(df_alertas)}")
 
-    exportador_ind = ExportadorExcel(obtener_ruta_salida())
     destino_ind = exportador_ind.exportar_atencion_alertas_calidad(
         df_alertas,
         nombre_hoja_mes=NOMBRE_HOJA_MES,
@@ -99,7 +133,6 @@ lap(t_alcon, "ALCON → Indicadores (A83)")
 # 3) HISTÓRICO → Indicadores (A180)
 # ---------------------------------------------
 t_hist = tic()
-exportador_ind = ExportadorExcel(obtener_ruta_salida())
 archivos_historico = meta.get("historico", [])
 
 if not archivos_historico:
@@ -154,13 +187,11 @@ lap(t_temp, "TEMPORALES: procesar y exportar")
 # ---------------------------------------------
 t_td = tic()
 try:
-    # Leemos TD Saldo desde el archivo procesado (SharePoint o local según RUTA_SP)
     df_td = pd.read_excel(destino_proc, sheet_name="TD Saldo", engine="openpyxl")
 
-    exportador_ind = ExportadorExcel(obtener_ruta_salida())
     destino_final = exportador_ind.exportar_td_saldo_en_indicadores(
         df_td=df_td,
-        nombre_hoja_mes=NOMBRE_HOJA_MES,        # hoja del mes
+        nombre_hoja_mes=NOMBRE_HOJA_MES,
         nombre_archivo="Indicadores_operacion_nuevo.xlsx",
         celda_inicio="A4"                       # encabezados en A4
     )
@@ -169,22 +200,56 @@ except Exception as e:
     print(f"❌ Error pegando TD Saldo en Indicadores: {e}")
 lap(t_td, "Pegar TD Saldo en Indicadores (A4)")
 
-# ---------------------------------------------
-# 6) TD SABANA → Indicadores (E4 en la hoja del mes)
-# ---------------------------------------------
-try:
-    df_td_sab = pd.read_excel(destino_proc, sheet_name="TD SABANA", engine="openpyxl")
 
-    exportador_ind = ExportadorExcel(obtener_ruta_salida())
-    destino_final_2 = exportador_ind.exportar_td_sabana_en_indicadores(
-        df_td_sabana=df_td_sab,
-        nombre_hoja_mes=NOMBRE_HOJA_MES,         # hoja del mes
+# ---------------------------------------------
+# 6) TD SABANA (conteo) → Indicadores (E4 en la hoja del mes)
+# ---------------------------------------------
+t_tdsab_cnt = tic()
+try:
+    # La TD de conteo está al inicio de la hoja "TD SABANA" (encabezados en la primera fila)
+    df_td_cnt = pd.read_excel(destino_proc, sheet_name="TD SABANA", engine="openpyxl")
+
+    # Pegamos: E = Total general, F = SI, G = % (IFERROR)
+    destino_final_cnt = exportador_ind.exportar_td_sabana_en_indicadores(
+        df_td_sabana=df_td_cnt,
+        nombre_hoja_mes=NOMBRE_HOJA_MES,
         nombre_archivo="Indicadores_operacion_nuevo.xlsx",
-        celda_inicio="E4"                        # encabezados en E4
+        celda_inicio="E4"                       # 👈 como tu plantilla
     )
-    print(f"\n📎 TD SABANA pegado en: {destino_final_2} -> hoja '{NOMBRE_HOJA_MES}' desde E4")
+    print(f"\n📎 TD SABANA (conteo) pegada en: {destino_final_cnt} -> hoja '{NOMBRE_HOJA_MES}' desde E4")
 except Exception as e:
-    print(f"❌ Error pegando TD SABANA en Indicadores: {e}")
+    print(f"❌ Error pegando TD SABANA (conteo) en Indicadores: {e}")
+lap(t_tdsab_cnt, "Pegar TD SABANA (conteo) en Indicadores (E4)")
+
+
+# ---------------------------------------------
+# 7) TD SABANA (DB) → Indicadores (H4 en la hoja del mes)
+# ---------------------------------------------
+t_db = tic()
+try:
+    # Leer de forma robusta la TD SABANA (DB) que insertamos desde A32 en la hoja TD SABANA
+    df_td_db = leer_td_sabana_db(destino_proc)
+
+    # Quedarnos solo con las columnas relevantes (acepta 'SI' o 'SÍ')
+    cols_ok = []
+    for c in df_td_db.columns:
+        c_clean = str(c).strip()
+        if c_clean in ("Etiquetas de fila", "Total general", "SI", "SÍ"):
+            cols_ok.append(c)
+    df_td_db = df_td_db[cols_ok].copy()
+    df_td_db = df_td_db.dropna(how="all")
+
+    destino_final_db = exportador_ind.exportar_td_sabana_db_en_indicadores(
+        df_td_db=df_td_db,
+        nombre_hoja_mes=NOMBRE_HOJA_MES,
+        nombre_archivo="Indicadores_operacion_nuevo.xlsx",
+        celda_inicio="H4",               # 👈 como en tu plantilla
+        formato_porcentaje="0.0%"        # cambia a "0.00%" si prefieres 2 decimales
+    )
+    print(f"\n📎 TD SABANA (DB) pegada en: {destino_final_db} -> hoja '{NOMBRE_HOJA_MES}' desde H4")
+except Exception as e:
+    print(f"❌ Error pegando TD SABANA (DB) en Indicadores: {e}")
+lap(t_db, "Pegar TD SABANA (DB) en Indicadores (H4)")
 
 
 # ---------------------------------------------
